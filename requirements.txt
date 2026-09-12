@@ -1,0 +1,12 @@
+numpy~=2.5.3
+matplotlib
+pandas
+streamlit
+sentence-transformers
+faiss-cpu
+
+scikit-learn
+
+tensorflow
+dotenv
+mistralai
