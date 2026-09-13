@@ -1,4 +1,4 @@
-"""
+﻿"""
 Execute selected simulation equations against station meteorology.
 
 Winter Delhi source split when emission equations are retrieved:
@@ -29,11 +29,36 @@ def _uses(ids: Sequence[str], key: str) -> bool:
     return any(key in i for i in ids)
 
 
+def total_source_aggregation(
+    traffic_mult: float,
+    stubble_mult: float,
+) -> float:
+    """
+    Aggregate traffic, stubble-burning, and other source
+    contributions into one effective source scale.
+
+    Corresponds to:
+        Q_total = Q_traffic + Q_stubble + Q_other
+    """
+
+    q_traffic = SHARE["traffic"] * traffic_mult
+    q_stubble = SHARE["stubble"] * stubble_mult
+    q_other = SHARE["other"]
+
+    return q_traffic + q_stubble + q_other
+
+
 def emission_scale(
     ids: Sequence[str],
     traffic_mult: float,
     stubble_mult: float,
 ) -> float:
+
+    if "sim_total_source_aggregation_01" in ids:
+        return total_source_aggregation(
+            traffic_mult,
+            stubble_mult,
+        )
 
     t = traffic_mult if _uses(ids, "traffic") else 1.0
     s = stubble_mult if _uses(ids, "stubble") else 1.0

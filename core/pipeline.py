@@ -132,7 +132,12 @@ class AQDigitalTwin:
             sim_eq_ids=sim_ids,
             pred_eq_ids=pred_ids,
         )
-
+        pack = synthesize(
+            decomp,
+            sim_hits,
+            pred_hits,
+            run_result=run,
+        )
         if verbose:
             print("\n" + render_text(pack))
             print("\n" + _render_run(run))

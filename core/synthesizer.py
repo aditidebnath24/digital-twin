@@ -11,12 +11,50 @@ structure and style.
 
 from __future__ import annotations
 from typing import Dict, Any, List, Tuple
+from core.llm import build_llm_provider
 
+def _generate_llm_explanation(
+    species: str,
+    station: str,
+    baseline_forecast: float,
+    scenario_delta: float,
+    hybrid_aqi: float,
+    aqi_label: str,
+) -> str:
+    """Generate a concise, grounded explanation of the final twin result."""
 
+    provider = build_llm_provider()
+
+    prompt = f"""
+You are the explanation module of an AQI Digital Twin.
+
+Explain the following result in exactly 2 concise sentences.
+
+Species: {species}
+Station: {station}
+Baseline forecast: {baseline_forecast:.1f} µg/m³
+Scenario concentration change: {scenario_delta:+.1f} µg/m³
+Hybrid AQI: {hybrid_aqi:.0f}
+AQI category: {aqi_label}
+
+Rules:
+- Explain whether the scenario increased or decreased pollution.
+- Use the numerical values exactly as provided.
+- Do not invent causes, measurements, or uncertainty.
+- For AQI values, use the correct US EPA AQI category.
+- Do not call the result "poor" if the AQI category is "Very Unhealthy".
+"""
+
+    try:
+        return provider.generate(prompt).strip()
+    except Exception as exc:
+        return f"LLM explanation unavailable: {exc}"
+    
 def synthesize(
     technical: Dict[str, Any],
     sim_results: List[Tuple[Dict, float]],
     pred_results: List[Tuple[Dict, float]],
+    run_result: Dict[str, Any] | None = None,
 ) -> Dict[str, Any]:
     """
     Returns a structured response that can be rendered to the user.
@@ -84,8 +122,25 @@ def synthesize(
         if eq.get("validity"):
             limitations.append(f"{eq['id']}: {eq['validity']}")
 
+    
+    if run_result:
+        now_result = run_result["now"]
+
+        llm_explanation = _generate_llm_explanation(
+            species=run_result["species"],
+            station=run_result["location"],
+            baseline_forecast=now_result["predicted"],
+            scenario_delta=run_result["scenario_delta"],
+            hybrid_aqi=now_result["aqi"],
+            aqi_label=now_result["aqi_label"],
+        )
+    else:
+        llm_explanation = _make_summary(
+            tech, primary_sim, primary_pred
+        )
+
     response = {
-        "summary": _make_summary(tech, primary_sim, primary_pred),
+        "summary": llm_explanation,
         "technical_description": tech,
         "selected_simulation_equations": sim_section,
         "selected_prediction_equations": pred_section,

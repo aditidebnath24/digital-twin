@@ -182,6 +182,7 @@ if submitted:
     st.subheader("3 · Equation package")
     if isinstance(pack, dict):
         if pack.get("summary"):
+            st.success("🤖 Gemini Digital Twin Explanation")
             st.info(pack["summary"])
         sim_eqs = pack.get("selected_simulation_equations") or []
         pred_eqs = pack.get("selected_prediction_equations") or []

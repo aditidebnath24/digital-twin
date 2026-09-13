@@ -9,105 +9,152 @@ import re
 from typing import Any, Dict, Optional
 
 from data.observations import parse_station_hint
+from core.llm import build_llm_provider
 
+def _llm_decompose(user_query: str) -> Dict[str, Any]:
+    provider = build_llm_provider()
+
+    prompt = f"""
+You are the query-understanding module of an Air Quality Digital Twin.
+
+Convert the user's natural-language AQI question into a JSON object.
+
+Rules:
+- target_species: use one or more of PM2.5, PM10, NO2, SO2, O3, CO, NH3, BC.
+  If the pollutant is not explicitly mentioned, use ["PM2.5"].
+- spatial_scale: one of "station", "urban", "street".
+- temporal_horizon: use "nowcast", "24h", "48h", or "72h".
+- horizon_hours: integer corresponding to the horizon.
+- scenario_requested: true if the user asks a what-if/change/reduction/increase scenario.
+- scenario_elements:
+    "traffic": true/false
+    "stubble_burning": true/false
+- station_hint: station name if mentioned, otherwise null.
+- required_outputs: include "concentration_forecast"; add "scenario_delta" for scenarios.
+- Return JSON only. Do not use markdown fences.
+
+User query:
+{user_query}
+"""
+
+    response = provider.generate(prompt)
+
+    # Remove accidental markdown fences if the model returns them.
+    response = response.strip()
+    response = re.sub(r"^```json\s*", "", response, flags=re.I)
+    response = re.sub(r"\s*```$", "", response)
+
+    import json
+    result = json.loads(response)
+
+    return result
 
 def decompose(user_query: str) -> Dict[str, Any]:
-    q = user_query.lower()
+    try:
+        llm_result = _llm_decompose(user_query)
 
-    species = []
-    for s in ["pm2.5", "pm25", "pm10", "no2", "so2", "o3", "ozone", "co", "nh3", "bc"]:
-        if s in q.replace("₂", "2").replace("₃", "3"):
-            if s in ("pm2.5", "pm25"):
-                species.append("PM2.5")
-            elif s == "pm10":
-                species.append("PM10")
-            elif s == "no2":
-                species.append("NO2")
-            elif s in ("o3", "ozone"):
-                species.append("O3")
-            elif s == "so2":
-                species.append("SO2")
-            elif s == "co":
-                species.append("CO")
-            else:
-                species.append(s.upper())
-    if not species:
-        species = ["PM2.5"]
+        species = llm_result.get("target_species") or ["PM2.5"]
+        if isinstance(species, str):
+            species = [species]
 
-    horizon = "short_term"
-    horizon_hours = 48
-    if any(w in q for w in ["72", "3 day", "three day", "next 3"]):
-        horizon, horizon_hours = "72h", 72
-    elif any(w in q for w in ["48", "2 day", "two day"]):
-        horizon, horizon_hours = "48h", 48
-    elif any(w in q for w in ["24", "tomorrow", "next day"]):
-        horizon, horizon_hours = "24h", 24
-    elif any(w in q for w in ["nowcast", "current", "now", "real-time"]):
-        horizon, horizon_hours = "nowcast", 6
+        horizon = llm_result.get("temporal_horizon", "48h")
+        horizon_hours = int(llm_result.get("horizon_hours", 48))
 
-    stubble = any(w in q for w in ["stubble", "burning", "biomass", "parali"])
-    traffic = any(w in q for w in ["traffic", "vehicle", "diesel", "bus", "vkt", "fleet"])
-    has_scenario = stubble or traffic or any(
-        w in q for w in ["scenario", "what if", "impact if", "reduce", "increase", "cut by", "emission"]
-    )
+        scale = llm_result.get("spatial_scale", "station")
 
-    scale = "station"
-    if any(
-        w in q.split()
-        for w in ["city", "delhi", "ncr"]
-    ) or "urban background" in q:
-        scale = "urban"
-    if any(w in q for w in ["street", "canyon", "roadside"]):
-        scale = "street"
+        scenario_elements = llm_result.get("scenario_elements") or {}
+        traffic = bool(scenario_elements.get("traffic", False))
+        stubble = bool(scenario_elements.get("stubble_burning", False))
 
-    sim_parts = []
-    pred_parts = []
-    if stubble:
-        sim_parts.append("stubble burning agricultural residue emission biomass")
-    if traffic:
+        has_scenario = bool(llm_result.get("scenario_requested", False))
+
+        station_hint = llm_result.get("station_hint")
+        if not station_hint:
+            station_hint = parse_station_hint(user_query)
+
+        sim_parts = []
+        pred_parts = []
+
+        if stubble:
+            sim_parts.append(
+                "stubble burning agricultural residue emission biomass"
+            )
+
+        if traffic:
+            sim_parts.append(
+                "traffic emission vehicle fleet source coupling scenario"
+            )
+
+        if has_scenario:
+            sim_parts.append(
+                "emission scenario dispersion mass balance mixing height"
+            )
+
+        sim_parts.append(" ".join(species))
         sim_parts.append(
-            "traffic emission vehicle fleet source coupling scenario"
+            "dispersion transport chemistry box model ventilation"
         )
-    if has_scenario:
-        sim_parts.append("emission scenario dispersion mass balance mixing height")
-    sim_parts.append(" ".join(species))
-    sim_parts.append("dispersion transport chemistry box model ventilation")
 
-    pred_parts.append(" ".join(species))
-    pred_parts.append("forecast prediction")
-    if horizon_hours >= 24:
-        pred_parts.append(f"{horizon_hours}h horizon sequence model")
-    if has_scenario:
-        pred_parts.append("bias correction hybrid residual kalman")
-    else:
-        pred_parts.append("lstm gradient boosting station forecast")
+        pred_parts.append(" ".join(species))
+        pred_parts.append("forecast prediction")
 
-    technical_description = {
-        "original_query": user_query,
-        "target_species": list(dict.fromkeys(species)),
-        "spatial_scale": scale,
-        "temporal_horizon": horizon,
-        "horizon_hours": horizon_hours,
-        "scenario_requested": has_scenario,
-        "scenario_elements": {"stubble_burning": stubble, "traffic": traffic},
-        "station_hint": parse_station_hint(user_query),
-        "required_outputs": ["concentration_forecast"]
-        + (["scenario_delta"] if has_scenario else []),
-        "delhi_context": True,
-    }
+        if horizon_hours >= 24:
+            pred_parts.append(
+                f"{horizon_hours}h horizon sequence model"
+            )
 
-    filters: Dict[str, Any] = {"species": species}
-    if scale in ("urban", "street"):
-        filters["scale"] = scale
+        if has_scenario:
+            pred_parts.append(
+                "bias correction hybrid residual kalman"
+            )
+        else:
+            pred_parts.append(
+                "lstm gradient boosting station forecast"
+            )
 
-    return {
-        "technical_description": technical_description,
-        "simulation_query": " ".join(sim_parts),
-        "prediction_query": " ".join(pred_parts),
-        "filters": filters,
-        "top_k_sim": 7,
-        "top_k_pred": 3,
-    }
+        technical_description = {
+            "original_query": user_query,
+            "target_species": list(dict.fromkeys(species)),
+            "spatial_scale": scale,
+            "temporal_horizon": horizon,
+            "horizon_hours": horizon_hours,
+            "scenario_requested": has_scenario,
+            "scenario_elements": {
+                "stubble_burning": stubble,
+                "traffic": traffic,
+            },
+            "station_hint": station_hint,
+            "required_outputs": (
+                llm_result.get("required_outputs")
+                or ["concentration_forecast"]
+                + (["scenario_delta"] if has_scenario else [])
+            ),
+            "delhi_context": True,
+        }
+
+        filters: Dict[str, Any] = {"species": species}
+
+        if scale in ("urban", "street"):
+            filters["scale"] = scale
+
+        return {
+            "technical_description": technical_description,
+            "simulation_query": " ".join(sim_parts),
+            "prediction_query": " ".join(pred_parts),
+            "filters": filters,
+            "top_k_sim": 7,
+            "top_k_pred": 3,
+        }
+
+    except Exception as exc:
+        print(
+            f"[LLM decomposition failed] {exc}"
+        )
+        print("[fallback] Using rule-based decomposition.")
+
+        # Existing rule-based implementation remains available
+        # in decomposer_backup.py for recovery.
+        raise
 
 
 def _first_percent(pattern: str, text: str) -> Optional[float]:
@@ -127,7 +174,7 @@ def parse_scenario_percents(query: str) -> Dict[str, float]:
 
     inc = _first_percent(r"increas\w*(?:\s+\w+){0,3}\s+(\d{1,3})\s*%", q)
     dec = _first_percent(
-        r"(?:reduc\w*|decreas\w*|cut)(?:\s+\w+){0,3}\s+(?:by\s+)?(\d{1,3})\s*%",
+        r"(?:reduc\w*|decreas\w*|cut\w*)(?:\s+[a-zA-Z_-]+){0,3}\s+(?:by\s+)?(\d{1,3})\s*%",
         q,
     )
 
@@ -141,7 +188,7 @@ def parse_scenario_percents(query: str) -> Dict[str, float]:
     elif mentions_traffic and inc is not None and not mentions_stubble:
         traffic_mult = 1.0 + inc
 
-    diesel = _first_percent(r"diesel[^%]{0,40}?(?:reduc\w*|cut)[^%]{0,12}?(\d{1,3})\s*%", q)
+    diesel = _first_percent(r"diesel[^%]{0,40}?(?:reduc\w*|cut\w*)[^%]{0,12}?(\d{1,3})\s*%", q)
     if diesel is not None:
         traffic_mult = 1.0 - diesel * 0.6
 
