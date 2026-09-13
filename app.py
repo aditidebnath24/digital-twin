@@ -182,8 +182,13 @@ if submitted:
     st.subheader("3 · Equation package")
     if isinstance(pack, dict):
         if pack.get("summary"):
-            st.success("🤖 Gemini Digital Twin Explanation")
-            st.info(pack["summary"])
+            summary = pack["summary"]
+
+            if summary.startswith("LLM explanation unavailable:"):
+                st.error("🔴 Gemini 3.6 Flash — LLM generation failed")
+            else:
+                st.success("🟢 Gemini 3.6 Flash — LLM explanation generated")
+                st.info(summary)
         sim_eqs = pack.get("selected_simulation_equations") or []
         pred_eqs = pack.get("selected_prediction_equations") or []
         if sim_eqs:
